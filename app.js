@@ -14,7 +14,8 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<"
 
 let yo = null, esAdmin = false, pestanaActual = "mis";
 let misComunicados = [], todosComunicados = [], usuarios = [], grupos = [];
-let desuscribir = [], primeraCarga = true, yaVistos = new Set();
+let desuscribir = [], primeraCarga = true, ghToken = "";
+const GITHUB_REPO = "Franzlu/comunicados-equipo";
 let destacar = new URLSearchParams(location.search).get("c");
 const abiertoDesdeAviso = destacar;
 
@@ -108,8 +109,8 @@ onAuthStateChanged(auth, async (user) => {
 /* ---------- Datos en vivo ---------- */
 function redibujarAdmin() {
   if (pestanaActual === "mis") return;
-  const f = document.querySelector("#formNuevo, #formGrupo");
-  const escribiendo = f && [...f.querySelectorAll("input[type=text], input:not([type]), textarea")].some((i) => i.value.trim());
+  const f = document.querySelector("#formNuevo, #formGrupo, #formToken");
+  const escribiendo = f && [...f.querySelectorAll("input[type=text], input[type=password], input:not([type]), textarea")].some((i) => i.value.trim());
   if (!escribiendo) dibujar();
 }
 function escuchar() {
@@ -136,6 +137,10 @@ function escuchar() {
       usuarios = snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => (a.nombre || "").localeCompare(b.nombre || ""));
       redibujarAdmin();
     }));
+    desuscribir.push(onSnapshot(doc(db, "config", "github"), (d) => {
+      ghToken = d.data()?.token || "";
+      if (pestanaActual === "equipo") redibujarAdmin();
+    }, () => {}));
     desuscribir.push(onSnapshot(collection(db, "grupos"), (snap) => {
       grupos = snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => a.nombre.localeCompare(b.nombre));
       redibujarAdmin();
@@ -247,8 +252,9 @@ function vistaMis() {
   const tarjeta = (c, pendiente) => `
     <article class="aviso ${pendiente ? "pendiente" : ""}" data-id="${c.id}">
       <h3>${esc(c.titulo)}</h3>
+      ${c.eventoEn ? `<p style="margin:0 0 8px;font-weight:700">🗓 ${esc(diaCorto(c.eventoEn.toDate()))}, ${esc(hora(c.eventoEn.toDate()))}</p>` : ""}
       <p class="cuerpo">${esc(c.mensaje)}</p>
-      <div class="meta">${fecha(c.creadoEn)}</div>
+      <div class="meta">Enviado ${fecha(c.creadoEn)}</div>
       <div class="acciones">${pendiente
         ? `<button class="btn si" data-accion="confirmar" data-id="${c.id}">Confirmar lectura</button>`
         : `<span class="estado ok">Confirmado</span>`}</div>
@@ -263,12 +269,31 @@ function vistaMis() {
 
 /* ---------- Vista: Nuevo comunicado ---------- */
 let seleccion = new Set();
+
+// Calcula cuándo se envía cada aviso de un evento:
+// al crearlo, el día del evento desde las 8:45 cada 30 min, y 10 minutos antes.
+function calcularPrograma(evento, ahora = new Date()) {
+  const programa = [{ en: ahora, tipo: "inicial" }];
+  const diezAntes = new Date(evento.getTime() - 10 * 60000);
+  const inicio = new Date(evento); inicio.setHours(8, 45, 0, 0);
+  for (let t = inicio; t < diezAntes; t = new Date(t.getTime() + 30 * 60000)) {
+    if (t - ahora < 2 * 60000) continue;        // ya pasó o es casi ahora
+    if (diezAntes - t < 5 * 60000) continue;    // muy pegado al aviso de 10 min
+    programa.push({ en: t, tipo: "dia" });
+  }
+  if (diezAntes - ahora > 2 * 60000) programa.push({ en: diezAntes, tipo: "antes" });
+  return programa;
+}
+const hora = (d) => d.toLocaleTimeString("es", { hour: "numeric", minute: "2-digit" });
+const diaCorto = (d) => d.toLocaleDateString("es", { weekday: "long", day: "numeric", month: "long" });
+
 function vistaNuevo() {
   const ahora = new Date(), manana = new Date(Date.now() + 24 * 3600e3);
+  const eventoDef = new Date(manana); eventoDef.setHours(10, 0, 0, 0);
   return `<h1 class="titulo">Nuevo comunicado</h1>
-    <p class="sub">Elige a quién va y cada cuánto se le recuerda a quien no haya confirmado.</p>
+    <p class="sub">Elige a quién va y cuándo se le recuerda.</p>
     <form class="panel" id="formNuevo">
-      <label class="campo"><span>Título</span><input id="nTitulo" required maxlength="80" placeholder="Ej.: Reunión general el viernes"></label>
+      <label class="campo"><span>Título</span><input id="nTitulo" required maxlength="80" placeholder="Ej.: Reunión general"></label>
       <label class="campo"><span>Mensaje</span><textarea id="nMensaje" required maxlength="1500"></textarea></label>
       <fieldset><legend>Destinatarios</legend>
         <div class="chips">
@@ -282,37 +307,69 @@ function vistaNuevo() {
           || `<div class="vacio">Aún no hay personas registradas. Comparte el enlace de la app con tu equipo.</div>`}</div>
         <p class="nota" id="nCuenta"></p>
       </fieldset>
-      <fieldset><legend>Cuándo enviarlo</legend>
+
+      <fieldset><legend>Tipo de comunicado</legend>
         <div class="radios">
-          <label><input type="radio" name="cuando" value="ya" checked> Lo antes posible</label>
-          <label><input type="radio" name="cuando" value="prog"> Programar</label>
+          <label><input type="radio" name="tipo" value="evento" checked> Evento con fecha y hora</label>
+          <label><input type="radio" name="tipo" value="aviso"> Aviso general</label>
         </div>
-        <label class="campo oculto" id="campoFecha" style="margin-top:12px"><span>Fecha y hora</span><input type="datetime-local" id="nFecha" value="${aLocal(ahora)}"></label>
       </fieldset>
-      <div class="fila">
-        <label class="campo"><span>Recordar a quien no confirme</span>
-          <select id="nRepetir">
-            <option value="0">No enviar recordatorios</option>
-            <option value="30">Cada 30 minutos</option>
-            <option value="60" selected>Cada hora</option>
-            <option value="120">Cada 2 horas</option>
-            <option value="240">Cada 4 horas</option>
-            <option value="1440">Una vez al día</option>
-          </select></label>
-        <label class="campo" id="campoHasta"><span>Dejar de recordar el</span><input type="datetime-local" id="nHasta" value="${aLocal(manana)}"></label>
+
+      <div id="bloqueEvento">
+        <label class="campo"><span>Fecha y hora del evento</span><input type="datetime-local" id="nEvento" value="${aLocal(eventoDef)}"></label>
+        <label class="persona" style="padding:0 0 14px;border:0"><input type="checkbox" id="nATodos" checked>
+          <div>Recordar el evento también a quien ya confirmó la lectura</div></label>
+        <div class="aviso" style="background:var(--aviso-claro);border:0;margin-bottom:18px"><div id="nPrograma" class="nota" style="color:var(--tinta)"></div></div>
       </div>
-      <p class="nota">El envío puede tardar hasta 10–15 minutos en llegar. Quien tenga la app abierta lo ve al instante.</p>
+
+      <div id="bloqueAviso" class="oculto">
+        <fieldset><legend>Cuándo enviarlo</legend>
+          <div class="radios">
+            <label><input type="radio" name="cuando" value="ya" checked> Ahora</label>
+            <label><input type="radio" name="cuando" value="prog"> Programar</label>
+          </div>
+          <label class="campo oculto" id="campoFecha" style="margin-top:12px"><span>Fecha y hora</span><input type="datetime-local" id="nFecha" value="${aLocal(ahora)}"></label>
+        </fieldset>
+        <div class="fila">
+          <label class="campo"><span>Recordar a quien no confirme</span>
+            <select id="nRepetir">
+              <option value="0">No enviar recordatorios</option>
+              <option value="30">Cada 30 minutos</option>
+              <option value="60" selected>Cada hora</option>
+              <option value="120">Cada 2 horas</option>
+              <option value="240">Cada 4 horas</option>
+              <option value="1440">Una vez al día</option>
+            </select></label>
+          <label class="campo" id="campoHasta"><span>Dejar de recordar el</span><input type="datetime-local" id="nHasta" value="${aLocal(manana)}"></label>
+        </div>
+      </div>
+
+      <p class="nota">${ghToken ? "El primer aviso llega en menos de un minuto." : "El primer aviso puede tardar hasta 5–10 minutos. Activa el envío inmediato en “Equipo y grupos”."} Quien tenga la app abierta lo ve al instante.</p>
       <button class="btn grande" id="btnEnviar">Enviar comunicado</button>
     </form>`;
 }
+
 function prepararNuevo() {
   const f = $("formNuevo");
   const actualizar = () => {
-    f.querySelectorAll(".persona input").forEach((i) => (i.checked = seleccion.has(i.value)));
+    f.querySelectorAll(".persona input[value]").forEach((i) => (i.checked = seleccion.has(i.value)));
     $("nCuenta").textContent = seleccion.size ? `${seleccion.size} ${seleccion.size === 1 ? "persona seleccionada" : "personas seleccionadas"}` : "Nadie seleccionado todavía.";
   };
-  actualizar();
-  f.querySelectorAll(".persona input").forEach((i) => i.onchange = () => { i.checked ? seleccion.add(i.value) : seleccion.delete(i.value); actualizar(); });
+  const vistaPrograma = () => {
+    const ev = new Date($("nEvento").value);
+    if (isNaN(ev) || ev <= new Date()) { $("nPrograma").textContent = "Elige una fecha y hora futuras para el evento."; return; }
+    const p = calcularPrograma(ev);
+    const dia = p.filter((x) => x.tipo === "dia");
+    const antes = p.find((x) => x.tipo === "antes");
+    $("nPrograma").innerHTML = `<strong>Se enviarán ${p.length} avisos:</strong>
+      <ul class="lista-nombres">
+        <li>Ahora, al enviar el comunicado</li>
+        ${dia.length ? `<li>El ${diaCorto(ev)}: ${dia.length === 1 ? `a las ${hora(dia[0].en)}` : `de ${hora(dia[0].en)} a ${hora(dia.at(-1).en)}, cada 30 minutos`}</li>` : ""}
+        ${antes ? `<li>A las ${hora(antes.en)}, 10 minutos antes del evento</li>` : ""}
+      </ul>`;
+  };
+  actualizar(); vistaPrograma();
+  f.querySelectorAll(".persona input[value]").forEach((i) => i.onchange = () => { i.checked ? seleccion.add(i.value) : seleccion.delete(i.value); actualizar(); });
   f.querySelectorAll("[data-grupo]").forEach((b) => b.onclick = () => {
     const g = b.dataset.grupo;
     if (g === "*") usuarios.forEach((u) => seleccion.add(u.id));
@@ -320,29 +377,68 @@ function prepararNuevo() {
     else (grupos.find((x) => x.id === g)?.miembros || []).forEach((m) => usuarios.some((u) => u.id === m) && seleccion.add(m));
     actualizar();
   });
+  f.querySelectorAll("input[name=tipo]").forEach((r) => r.onchange = () => {
+    $("bloqueEvento").classList.toggle("oculto", f.tipo.value !== "evento");
+    $("bloqueAviso").classList.toggle("oculto", f.tipo.value !== "aviso");
+  });
+  $("nEvento").oninput = vistaPrograma;
   f.querySelectorAll("input[name=cuando]").forEach((r) => r.onchange = () => $("campoFecha").classList.toggle("oculto", f.cuando.value !== "prog"));
   $("nRepetir").onchange = () => $("campoHasta").classList.toggle("oculto", $("nRepetir").value === "0");
+
   f.onsubmit = async (ev) => {
     ev.preventDefault();
     if (!seleccion.size) { toast("Elige al menos un destinatario."); return; }
-    const enviarEn = f.cuando.value === "prog" ? new Date($("nFecha").value) : new Date();
-    const repetir = Number($("nRepetir").value);
-    const hasta = repetir ? new Date($("nHasta").value) : enviarEn;
-    if (repetir && hasta <= enviarEn) { toast("La fecha para dejar de recordar debe ser posterior al envío."); return; }
+    const ahora = new Date();
+    const base = {
+      titulo: $("nTitulo").value.trim(), mensaje: $("nMensaje").value.trim(),
+      destinatarios: [...seleccion], confirmados: [], confirmadosEn: {},
+      creadoEn: serverTimestamp(), activo: true, enviosRealizados: 0,
+      zonaHoraria: Intl.DateTimeFormat().resolvedOptions().timeZone
+    };
+    let datos, inmediato;
+    if (f.tipo.value === "evento") {
+      const evento = new Date($("nEvento").value);
+      if (isNaN(evento) || evento <= ahora) { toast("La fecha del evento debe ser futura."); return; }
+      const programa = calcularPrograma(evento, ahora);
+      datos = { ...base, tipo: "evento", eventoEn: Timestamp.fromDate(evento),
+        programa: programa.map((p) => ({ en: Timestamp.fromDate(p.en), tipo: p.tipo })),
+        indiceEnvio: 0, proximoEnvio: Timestamp.fromDate(ahora), recordarATodos: $("nATodos").checked,
+        enviarEn: Timestamp.fromDate(ahora), hasta: Timestamp.fromDate(evento), repetirCadaMin: 0 };
+      inmediato = true;
+    } else {
+      const enviarEn = f.cuando.value === "prog" ? new Date($("nFecha").value) : ahora;
+      const repetir = Number($("nRepetir").value);
+      const hasta = repetir ? new Date($("nHasta").value) : enviarEn;
+      if (repetir && hasta <= enviarEn) { toast("La fecha para dejar de recordar debe ser posterior al envío."); return; }
+      datos = { ...base, tipo: "aviso", enviarEn: Timestamp.fromDate(enviarEn), proximoEnvio: Timestamp.fromDate(enviarEn),
+        repetirCadaMin: repetir, hasta: Timestamp.fromDate(hasta) };
+      inmediato = f.cuando.value !== "prog";
+    }
     $("btnEnviar").disabled = true;
     try {
-      await addDoc(collection(db, "comunicados"), {
-        titulo: $("nTitulo").value.trim(), mensaje: $("nMensaje").value.trim(),
-        destinatarios: [...seleccion], confirmados: [], confirmadosEn: {},
-        creadoEn: serverTimestamp(), enviarEn: Timestamp.fromDate(enviarEn),
-        proximoEnvio: Timestamp.fromDate(enviarEn), repetirCadaMin: repetir,
-        hasta: Timestamp.fromDate(hasta), activo: true, enviosRealizados: 0
-      });
+      await addDoc(collection(db, "comunicados"), datos);
       seleccion.clear();
-      toast("Comunicado enviado a la cola. Llegará en los próximos minutos.");
+      const r = inmediato ? await dispararEnvio() : "programado";
+      toast(r === "ok" ? "Comunicado enviado. Llegará en menos de un minuto."
+        : r === "programado" ? "Comunicado programado."
+        : r === "sin-token" ? "Comunicado guardado. Llegará en los próximos minutos."
+        : "Comunicado guardado, pero el envío inmediato falló (revisa el token). Llegará en unos minutos.");
       pestanaActual = "enviados"; dibujarPestanas(); dibujar();
     } catch (e) { toast("No se pudo guardar: " + e.message); $("btnEnviar").disabled = false; }
   };
+}
+
+// Pide a GitHub que ejecute el envío en este momento, sin esperar al turno de 5 minutos
+async function dispararEnvio() {
+  if (!ghToken) return "sin-token";
+  try {
+    const r = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/actions/workflows/recordatorios.yml/dispatches`, {
+      method: "POST",
+      headers: { Authorization: "Bearer " + ghToken, Accept: "application/vnd.github+json" },
+      body: JSON.stringify({ ref: "main" })
+    });
+    return r.status === 204 ? "ok" : "error";
+  } catch { return "error"; }
 }
 
 /* ---------- Vista: Enviados ---------- */
@@ -353,10 +449,12 @@ function vistaEnviados() {
       const conf = c.confirmados || [], dest = c.destinatarios || [];
       const pend = dest.filter((u) => !conf.includes(u));
       const estado = !c.activo ? `<span class="estado fin">Finalizado</span>`
+        : c.tipo === "evento" ? `<span class="estado esp">Próximo aviso: ${fecha(c.proximoEnvio)}</span>`
         : c.enviosRealizados ? `<span class="estado esp">Recordando cada ${etiquetaIntervalo(c.repetirCadaMin)}</span>`
         : `<span class="estado esp">Programado: ${fecha(c.enviarEn)}</span>`;
       return `<article class="aviso">
         <h3>${esc(c.titulo)}</h3>
+        ${c.eventoEn ? `<p style="margin:0 0 8px;font-weight:700">🗓 Evento: ${fecha(c.eventoEn)}</p>` : ""}
         <div class="acciones" style="margin-top:0">${estado}<span class="estado ${pend.length ? "esp" : "ok"}">${conf.length} de ${dest.length} confirmaron</span></div>
         <p class="meta">Creado ${fecha(c.creadoEn)}${c.ultimoEnvio ? ` · último envío ${fecha(c.ultimoEnvio)}` : ""}</p>
         <details><summary>Ver detalle</summary>
@@ -382,6 +480,15 @@ function vistaEquipo() {
         <div class="persona" style="cursor:default"><div style="flex:1">${esc(u.nombre)}<small>${esc(u.email)}</small></div>
         <span class="estado ${(u.tokens || []).length ? "ok" : "esp"}">${(u.tokens || []).length ? `${u.tokens.length} ${u.tokens.length === 1 ? "dispositivo" : "dispositivos"}` : "Sin notificaciones"}</span></div>`).join("")
         || `<div class="vacio">Nadie se ha registrado aún.</div>`}</div></div>
+    <div class="seccion"><h2>Envío inmediato</h2>
+      <form class="panel" id="formToken">
+        <p style="margin-top:0">${ghToken
+          ? "<strong>Activado.</strong> Los comunicados salen en menos de un minuto. Si cambias el token, pega el nuevo abajo."
+          : "Sin activar: los comunicados tardan hasta 5–10 minutos en salir. Pega aquí tu token de GitHub para que salgan al instante."}</p>
+        <label class="campo"><span>Token de GitHub</span><input id="tToken" type="password" autocomplete="off" placeholder="github_pat_…" required></label>
+        <div class="acciones"><button class="btn">Guardar token</button>
+        ${ghToken ? `<button type="button" class="btn claro" data-accion="probarToken">Probar envío ahora</button>` : ""}</div>
+      </form></div>
     <div class="seccion"><h2>Grupos</h2>
       ${grupos.map((g) => `<article class="aviso"><h3>${esc(g.nombre)}</h3>
         <p class="meta">${(g.miembros || []).map((m) => esc(nombreDe(m))).join(", ") || "Sin integrantes"}</p>
@@ -400,6 +507,7 @@ document.addEventListener("click", async (e) => {
   const id = b.dataset.id;
   switch (b.dataset.accion) {
     case "activar": iniciarNotificaciones(true); break;
+    case "probarToken": toast((await dispararEnvio()) === "ok" ? "Listo: GitHub está ejecutando el envío." : "El token no funcionó. Revisa que tenga permiso de Actions (lectura y escritura) en este repositorio."); break;
     case "confirmar": b.disabled = true; await confirmar(id); break;
     case "detener": await updateDoc(doc(db, "comunicados", id), { activo: false, motivoFin: "detenido por el administrador" }); toast("Recordatorios detenidos."); break;
     case "eliminar": if (confirm("¿Eliminar este comunicado? Desaparecerá también para tu equipo.")) { await deleteDoc(doc(db, "comunicados", id)); toast("Comunicado eliminado."); } break;
@@ -408,6 +516,13 @@ document.addEventListener("click", async (e) => {
   }
 });
 document.addEventListener("submit", async (e) => {
+  if (e.target.id === "formToken") {
+    e.preventDefault();
+    const t = $("tToken").value.trim();
+    try { await setDoc(doc(db, "config", "github"), { token: t, actualizado: serverTimestamp() }); e.target.reset(); toast("Token guardado."); dibujar(); }
+    catch (err) { toast("No se pudo guardar: revisa que pegaste las reglas nuevas en Firebase."); }
+    return;
+  }
   if (e.target.id !== "formGrupo") return;
   e.preventDefault();
   const miembros = [...e.target.querySelectorAll("input[type=checkbox]:checked")].map((i) => i.value);
