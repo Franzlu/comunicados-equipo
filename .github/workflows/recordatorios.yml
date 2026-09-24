@@ -2,8 +2,8 @@ name: Enviar recordatorios
 
 on:
   schedule:
-    - cron: "*/10 * * * *"
-  workflow_dispatch:
+    - cron: "*/5 * * * *"    # cada 5 minutos
+  workflow_dispatch:         # botón "Run workflow" para probar a mano
 
 permissions:
   contents: write
@@ -16,11 +16,11 @@ jobs:
   enviar:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Instalar dependencias
         working-directory: scripts
@@ -33,6 +33,8 @@ jobs:
           APP_URL: https://franzlu.github.io/comunicados-equipo/
         run: node enviar-recordatorios.js
 
+      # GitHub pausa las tareas programadas si el repositorio pasa 60 días sin cambios.
+      # Este paso hace un cambio mínimo cada ~45 días para que nunca se detenga.
       - name: Mantener activa la tarea
         run: |
           ultimo=$(git log -1 --format=%ct)
