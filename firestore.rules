@@ -1,0 +1,39 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function conSesion() { return request.auth != null; }
+    function esAdmin() {
+      return conSesion() && request.auth.token.email == 'franzlu.22@gmail.com';
+    }
+
+    // Perfil de cada persona (nombre, correo y dispositivos con notificaciones)
+    match /users/{uid} {
+      allow read: if conSesion() && (request.auth.uid == uid || esAdmin());
+      allow create, update: if conSesion() && request.auth.uid == uid;
+      allow delete: if esAdmin();
+    }
+
+    // Grupos: solo el administrador
+    match /grupos/{id} {
+      allow read, write: if esAdmin();
+    }
+
+    // Comunicados: cada persona solo ve los suyos y solo puede confirmarlos
+    match /comunicados/{id} {
+      allow read: if esAdmin() ||
+        (conSesion() && request.auth.uid in resource.data.destinatarios);
+      allow create, delete: if esAdmin();
+      allow update: if esAdmin() || (
+        conSesion() &&
+        request.auth.uid in resource.data.destinatarios &&
+        request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['confirmados', 'confirmadosEn']) &&
+        request.resource.data.confirmados.toSet()
+          .difference(resource.data.confirmados.toSet()).hasOnly([request.auth.uid]) &&
+        resource.data.confirmados.toSet()
+          .difference(request.resource.data.confirmados.toSet()).size() == 0
+      );
+    }
+  }
+}

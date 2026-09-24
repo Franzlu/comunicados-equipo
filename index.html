@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#14213D">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Avisos">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>Avisos del equipo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Atkinson+Hyperlegible:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --tinta:#14213D; --papel:#FFFFFF; --fondo:#EEF1F5; --linea:#D5DBE5; --suave:#5B6780;
+  --aviso:#FFC43D; --aviso-claro:#FFF3D1; --ok:#2A9D6F; --ok-claro:#E3F4EC; --alerta:#D1495B;
+  --radio:14px;
+  --display:"Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+  --texto:"Atkinson Hyperlegible", "Segoe UI", system-ui, sans-serif;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+}
+*,*::before,*::after{box-sizing:inherit}
+body{margin:0;background:var(--fondo);color:var(--tinta);font:17px/1.5 var(--texto);-webkit-font-smoothing:antialiased}
+h1,h2,h3{font-family:var(--display);line-height:1.15;margin:0}
+button,input,textarea,select{font:inherit;color:inherit}
+:focus-visible{outline:3px solid var(--aviso);outline-offset:2px}
+.oculto{display:none!important}
+
+/* Barra superior */
+.barra{background:var(--tinta);color:#fff;position:sticky;top:0;z-index:10}
+.barra-in{max-width:760px;margin:0 auto;padding:14px 20px;display:flex;align-items:center;gap:12px}
+.marca{font-family:var(--display);font-weight:800;font-size:22px;letter-spacing:-.01em;display:flex;align-items:center;gap:10px}
+.marca i{width:14px;height:14px;border-radius:50%;background:var(--aviso);display:inline-block}
+.barra .yo{margin-left:auto;font-size:15px;opacity:.85;text-align:right}
+.barra button{background:transparent;border:1px solid rgba(255,255,255,.35);color:#fff;border-radius:999px;padding:6px 14px;font-size:14px;cursor:pointer}
+
+/* Pestañas */
+.pestanas{max-width:760px;margin:0 auto;padding:0 20px;display:flex;gap:4px;overflow-x:auto}
+.pestanas button{background:none;border:0;color:#fff;opacity:.7;padding:10px 12px 12px;border-bottom:3px solid transparent;cursor:pointer;white-space:nowrap;font-weight:700}
+.pestanas button[aria-selected="true"]{opacity:1;border-bottom-color:var(--aviso)}
+
+main{max-width:760px;margin:0 auto;padding:24px 20px 80px}
+.titulo{font-size:30px;font-weight:800;margin-bottom:6px}
+.sub{color:var(--suave);margin:0 0 22px}
+
+/* Tarjetas de comunicado */
+.aviso{background:var(--papel);border-radius:var(--radio);padding:20px 22px;margin-bottom:14px;border:1px solid var(--linea);position:relative}
+.aviso.pendiente{border:0;box-shadow:inset 8px 0 0 var(--aviso), 0 1px 0 var(--linea);padding-left:32px}
+.aviso.resaltado{animation:pulso 1.4s ease 2}
+@keyframes pulso{50%{box-shadow:inset 8px 0 0 var(--aviso),0 0 0 6px var(--aviso-claro)}}
+.aviso h3{font-size:21px;font-weight:600;margin-bottom:6px}
+.aviso .cuerpo{white-space:pre-wrap;margin:0 0 14px}
+.aviso .meta{font-size:14px;color:var(--suave)}
+.acciones{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:12px}
+.estado{display:inline-block;font-size:14px;font-weight:700;border-radius:999px;padding:3px 12px}
+.estado.ok{background:var(--ok-claro);color:#1d6e4e}
+.estado.esp{background:var(--aviso-claro);color:#7a5600}
+.estado.fin{background:#E6E9EF;color:var(--suave)}
+
+.btn{border:0;border-radius:999px;padding:11px 20px;font-weight:700;cursor:pointer;background:var(--tinta);color:#fff}
+.btn.si{background:var(--ok)}
+.btn.claro{background:transparent;border:1.5px solid var(--linea);color:var(--tinta)}
+.btn.peligro{background:transparent;color:var(--alerta);border:1.5px solid #f0c3c9}
+.btn:disabled{opacity:.5;cursor:default}
+.btn.grande{width:100%;padding:15px;font-size:18px}
+
+/* Formularios */
+.panel{background:var(--papel);border:1px solid var(--linea);border-radius:var(--radio);padding:22px}
+label.campo{display:block;font-weight:700;margin:0 0 16px}
+label.campo span{display:block;margin-bottom:6px}
+.campo input,.campo textarea,.campo select{width:100%;border:1.5px solid var(--linea);border-radius:10px;padding:11px 13px;background:#fff;font-weight:400}
+.campo textarea{min-height:120px;resize:vertical}
+.fila{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media (max-width:560px){.fila{grid-template-columns:1fr}}
+.nota{font-size:14px;color:var(--suave);font-weight:400}
+fieldset{border:0;padding:0;margin:0 0 18px}
+legend{font-weight:700;margin-bottom:8px;padding:0}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}
+.chip{border:1.5px solid var(--linea);background:#fff;border-radius:999px;padding:6px 14px;cursor:pointer;font-size:15px}
+.chip.on{background:var(--tinta);color:#fff;border-color:var(--tinta)}
+.personas{border:1.5px solid var(--linea);border-radius:10px;max-height:260px;overflow:auto}
+.persona{display:flex;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--fondo);cursor:pointer}
+.persona:last-child{border-bottom:0}
+.persona input{width:20px;height:20px;accent-color:var(--tinta)}
+.persona small{color:var(--suave);display:block}
+.radios{display:flex;gap:18px;flex-wrap:wrap;font-weight:400}
+.radios input{accent-color:var(--tinta)}
+
+/* Aviso de notificaciones */
+.activar{background:var(--tinta);color:#fff;border-radius:var(--radio);padding:18px 20px;margin-bottom:22px;display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+.activar p{margin:0;flex:1 1 260px}
+.activar .btn{background:var(--aviso);color:var(--tinta)}
+.activar ol{margin:6px 0 0;padding-left:20px}
+
+/* Acceso */
+.acceso{max-width:420px;margin:8vh auto 0;padding:0 20px}
+.acceso .grande-titulo{font-size:44px;font-weight:800;letter-spacing:-.02em;margin-bottom:8px}
+.alternar{background:none;border:0;color:var(--tinta);text-decoration:underline;cursor:pointer;padding:8px 0;margin-top:8px}
+.error{color:var(--alerta);font-weight:700;min-height:1.5em;margin:0 0 10px}
+
+/* Interrupción a pantalla completa */
+.interrupcion{position:fixed;inset:0;z-index:100;background:var(--aviso);display:flex;align-items:center;justify-content:center;padding:24px;
+  padding-top:calc(24px + env(safe-area-inset-top,0px));animation:entra .25s ease}
+@keyframes entra{from{opacity:0;transform:scale(1.03)}}
+.interrupcion .caja{max-width:620px;width:100%}
+.interrupcion .tipo{font-weight:700;font-size:18px;margin-bottom:10px}
+.interrupcion h2{font-size:clamp(34px,7vw,60px);font-weight:800;letter-spacing:-.02em;margin-bottom:18px}
+.interrupcion p{font-size:20px;white-space:pre-wrap;margin:0 0 28px;max-height:40vh;overflow:auto}
+.interrupcion .btn{font-size:19px;padding:16px 28px}
+.interrupcion .btn.claro{border-color:var(--tinta)}
+
+.toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--tinta);color:#fff;padding:12px 20px;border-radius:999px;z-index:200;max-width:90vw;text-align:center}
+.vacio{text-align:center;color:var(--suave);padding:40px 10px}
+details summary{cursor:pointer;font-weight:700;margin-top:6px}
+.lista-nombres{margin:6px 0 0;padding-left:20px;font-size:15px}
+.seccion{margin-top:32px}
+.seccion h2{font-size:22px;margin-bottom:12px}
+@media (prefers-reduced-motion:reduce){*{animation:none!important}}
+</style>
+</head>
+<body>
+
+<!-- Pantalla de acceso -->
+<section id="vistaAcceso" class="acceso oculto">
+  <h1 class="grande-titulo">Avisos del equipo</h1>
+  <p class="sub" id="accesoSub">Entra con tu correo para ver tus comunicados.</p>
+  <form id="formAcceso" class="panel">
+    <label class="campo oculto" id="campoNombre"><span>Tu nombre</span><input id="inNombre" autocomplete="name"></label>
+    <label class="campo"><span>Correo</span><input id="inCorreo" type="email" autocomplete="email" required></label>
+    <label class="campo"><span>Contraseña</span><input id="inClave" type="password" autocomplete="current-password" minlength="6" required></label>
+    <p class="error" id="errAcceso"></p>
+    <button class="btn grande" id="btnAcceso">Entrar</button>
+    <button type="button" class="alternar" id="btnAlternar">Es mi primera vez: crear cuenta</button>
+    <button type="button" class="alternar" id="btnOlvide">Olvidé mi contraseña</button>
+  </form>
+</section>
+
+<!-- App -->
+<div id="vistaApp" class="oculto">
+  <header class="barra">
+    <div class="barra-in">
+      <div class="marca"><i></i>Avisos</div>
+      <div class="yo" id="yoNombre"></div>
+      <button id="btnSalir">Salir</button>
+    </div>
+    <nav class="pestanas" id="pestanas" role="tablist"></nav>
+  </header>
+  <main id="contenido"></main>
+</div>
+
+<div id="interrupcion" class="interrupcion oculto" role="alertdialog" aria-modal="true" aria-labelledby="intTitulo">
+  <div class="caja">
+    <div class="tipo" id="intTipo">Nuevo comunicado</div>
+    <h2 id="intTitulo"></h2>
+    <p id="intMensaje"></p>
+    <div class="acciones">
+      <button class="btn" id="intConfirmar">Confirmar lectura</button>
+      <button class="btn claro" id="intCerrar">Ver después</button>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
