@@ -2,8 +2,8 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/fireba
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword,
   signOut, sendPasswordResetEmail } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { getFirestore, doc, setDoc, getDoc, getDocs, collection, query, where, onSnapshot, addDoc,
-  updateDoc, deleteDoc, serverTimestamp, Timestamp, arrayUnion } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import { getMessaging, getToken, onMessage, isSupported } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging.js";
+  updateDoc, deleteDoc, serverTimestamp, Timestamp, arrayUnion, arrayRemove } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { getMessaging, getToken, deleteToken, onMessage, isSupported } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging.js";
 import { firebaseConfig, VAPID_KEY, ADMIN_EMAIL } from "./config.js";
 
 const app = initializeApp(firebaseConfig);
@@ -14,7 +14,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<"
 
 let yo = null, esAdmin = false, pestanaActual = "mis";
 let misComunicados = [], todosComunicados = [], usuarios = [], grupos = [];
-let desuscribir = [], primeraCarga = true, ghToken = "";
+let desuscribir = [], primeraCarga = true, ghToken = "", tokenActual = null;
 const GITHUB_REPO = "Franzlu/comunicados-equipo";
 let destacar = new URLSearchParams(location.search).get("c");
 const abiertoDesdeAviso = destacar;
@@ -33,6 +33,9 @@ const instalada = matchMedia("(display-mode: standalone)").matches || navigator.
 // Alarma que se repite hasta que la persona atienda el aviso
 let ctxAudio = null, bucleAlarma = null, parpadeo = null;
 const tituloOriginal = document.title;
+const leerAjuste = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
+const guardarAjuste = (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch {} };
+
 function audio() {
   if (!ctxAudio) {
     try { ctxAudio = new (window.AudioContext || window.webkitAudioContext)(); } catch { return null; }
@@ -41,6 +44,45 @@ function audio() {
   if (ctxAudio.state === "suspended") ctxAudio.resume().catch(() => {});
   return ctxAudio;
 }
+
+// "Sonar por todos los altavoces": un reproductor por cada salida de audio (altavoces, auriculares…)
+let salidas = []; // [{ id, nombre, ctx }]
+const multiSalida = () => leerAjuste("todosAltavoces") === "1";
+async function cargarSalidas() {
+  salidas.forEach((x) => x.ctx.close().catch(() => {}));
+  salidas = [];
+  if (!multiSalida() || !navigator.mediaDevices?.enumerateDevices) return;
+  const disp = (await navigator.mediaDevices.enumerateDevices().catch(() => []))
+    .filter((d) => d.kind === "audiooutput" && d.deviceId && !["default", "communications"].includes(d.deviceId));
+  for (const d of disp) {
+    try {
+      const ctx = new AudioContext();
+      if (ctx.setSinkId) await ctx.setSinkId(d.deviceId); else { ctx.close(); continue; }
+      salidas.push({ id: d.deviceId, nombre: d.label || "Salida de audio", ctx });
+    } catch {}
+  }
+  if (pestanaActual === "mis") dibujar();
+}
+navigator.mediaDevices?.addEventListener?.("devicechange", () => cargarSalidas());
+async function activarTodosAltavoces(activar) {
+  if (!activar) { guardarAjuste("todosAltavoces", null); await cargarSalidas(); toast("La alarma sonará solo por la salida principal."); dibujar(); return; }
+  try {
+    // El navegador solo muestra la lista de altavoces si se da permiso de micrófono.
+    // La app no graba nada: el micrófono se cierra al instante.
+    const st = await navigator.mediaDevices.getUserMedia({ audio: true });
+    st.getTracks().forEach((t) => t.stop());
+  } catch { toast("Sin ese permiso no se pueden ver los altavoces. Puedes darlo en el candado junto a la dirección."); return; }
+  guardarAjuste("todosAltavoces", "1");
+  await cargarSalidas();
+  toast(salidas.length > 1 ? `La alarma sonará por ${salidas.length} salidas de audio.` : "Solo se encontró una salida de audio en este momento.");
+  pitido();
+}
+function contextosActivos() {
+  const lista = multiSalida() && salidas.length ? salidas.map((x) => x.ctx) : [audio()];
+  lista.forEach((c) => c && c.state === "suspended" && c.resume().catch(() => {}));
+  return lista.filter(Boolean);
+}
+
 // El navegador solo permite sonido después de un primer clic en la página.
 // Mientras no esté permitido, se muestra una barra para activarlo con un toque.
 const barraSonido = document.createElement("button");
@@ -51,18 +93,21 @@ function revisarSonido() {
   const ctx = audio();
   barraSonido.style.display = yo && ctx && ctx.state !== "running" ? "block" : "none";
 }
-barraSonido.onclick = async () => { await audio()?.resume().catch(() => {}); pitido(); revisarSonido(); };
-addEventListener("pointerdown", () => { audio(); setTimeout(revisarSonido, 300); });
+barraSonido.onclick = async () => { await audio()?.resume().catch(() => {}); contextosActivos(); pitido(); revisarSonido(); };
+addEventListener("pointerdown", () => { contextosActivos(); setTimeout(revisarSonido, 300); });
 setInterval(revisarSonido, 3000);
+if (multiSalida()) cargarSalidas();
+
 function pitido() {
-  const ctx = audio(); if (!ctx) return;
-  [0, 0.22, 0.44].forEach((t, i) => {
-    const o = ctx.createOscillator(), g = ctx.createGain();
-    o.type = "square"; o.frequency.value = i === 2 ? 1175 : 880;
-    o.connect(g); g.connect(ctx.destination);
-    g.gain.setValueAtTime(0.18, ctx.currentTime + t); g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + t + 0.18);
-    o.start(ctx.currentTime + t); o.stop(ctx.currentTime + t + 0.2);
-  });
+  for (const ctx of contextosActivos()) {
+    [0, 0.22, 0.44].forEach((t, i) => {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.type = "square"; o.frequency.value = i === 2 ? 1175 : 880;
+      o.connect(g); g.connect(ctx.destination);
+      g.gain.setValueAtTime(0.18, ctx.currentTime + t); g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + t + 0.18);
+      o.start(ctx.currentTime + t); o.stop(ctx.currentTime + t + 0.2);
+    });
+  }
 }
 function iniciarAlarma() {
   detenerAlarma(); pitido();
@@ -127,7 +172,17 @@ function traducirError(e) {
   if (c.includes("too-many-requests")) return "Demasiados intentos. Espera unos minutos.";
   return "No se pudo completar: " + (e.message || c);
 }
-$("btnSalir").onclick = () => signOut(auth);
+// Al salir, este dispositivo deja de recibir los avisos de esa persona
+$("btnSalir").onclick = async () => {
+  $("btnSalir").disabled = true;
+  try {
+    if (tokenActual && yo) await updateDoc(doc(db, "users", yo.uid), { tokens: arrayRemove(tokenActual) });
+    if (tokenActual) await deleteToken(getMessaging(app)).catch(() => {});
+  } catch (e) { console.warn(e); }
+  tokenActual = null;
+  await signOut(auth);
+  $("btnSalir").disabled = false;
+};
 
 onAuthStateChanged(auth, async (user) => {
   desuscribir.forEach((f) => f()); desuscribir = [];
@@ -140,6 +195,7 @@ onAuthStateChanged(auth, async (user) => {
     await setDoc(doc(db, "users", user.uid), { nombre: user.email.split("@")[0], email: user.email.toLowerCase(), tokens: [], creadoEn: serverTimestamp() });
   }
   yo = { uid: user.uid, email: user.email, ...(perfil.data() || {}) };
+  setDoc(doc(db, "users", user.uid), { ultimoAcceso: serverTimestamp() }, { merge: true }).catch(() => {});
   $("yoNombre").textContent = yo.nombre || user.email;
   $("vistaAcceso").classList.add("oculto"); $("vistaApp").classList.remove("oculto");
   primeraCarga = true;
@@ -166,7 +222,7 @@ function escuchar() {
         if (ch.type === "added" && !(ch.doc.data().confirmados || []).includes(yo.uid)) mostrarInterrupcion(ch.doc.id, false);
       }
     }
-    if (primeraCarga) setTimeout(revisarAvisosSinAtender, 800);
+    setTimeout(revisarAvisosSinAtender, primeraCarga ? 800 : 300);
     primeraCarga = false;
     if (pestanaActual === "mis") dibujar();
   }));
@@ -210,6 +266,7 @@ async function iniciarNotificaciones(pedirPermiso) {
     const messaging = getMessaging(app);
     const token = await getToken(messaging, { vapidKey: VAPID_KEY, serviceWorkerRegistration: reg });
     if (token) {
+      tokenActual = token;
       await setDoc(doc(db, "users", yo.uid), { tokens: arrayUnion(token) }, { merge: true });
       estadoNotif = "listo";
       if (pedirPermiso) toast("Notificaciones activadas en este dispositivo.");
@@ -258,7 +315,10 @@ function mostrarInterrupcion(id, esRecordatorio, notif, desdePush = false) {
   if (enPantalla === id && bucleAlarma) return; // ya está en pantalla y sonando
   enPantalla = id;
   const titulo = notif?.title || tituloUltimoAviso(c);
-  $("intTipo").textContent = titulo.startsWith("⏰") ? titulo.split(": ")[0].replace("⏰", "").trim()
+  const minDesdeInicio = c?.eventoEn ? Math.floor((Date.now() - c.eventoEn.toMillis()) / 60000) : -1;
+  $("intTipo").textContent = minDesdeInicio >= 3 ? `⚠️ El evento empezó hace ${minDesdeInicio} minutos`
+    : minDesdeInicio >= 0 ? "Empieza ahora"
+    : titulo.startsWith("⏰") ? titulo.split(": ")[0].replace("⏰", "").trim()
     : esRecordatorio && c?.enviosRealizados ? "Recordatorio pendiente" : "Nuevo comunicado";
   $("intTitulo").textContent = c?.titulo || titulo || "Comunicado";
   $("intMensaje").textContent = (c?.eventoEn ? `🗓 ${diaCorto(c.eventoEn.toDate())}, ${hora(c.eventoEn.toDate())}\n` : "") + (c?.mensaje || notif?.body || "");
@@ -268,35 +328,37 @@ function mostrarInterrupcion(id, esRecordatorio, notif, desdePush = false) {
   $("intConfirmar").focus();
   iniciarAlarma();
 }
-// Recuerda qué avisos ya se atendieron en este dispositivo (para no repetirlos al abrir la app)
-const claveAviso = (c) => `atendido:${c.id}:${c.ultimoEnvio?.seconds || 0}`;
-function marcarAtendido(id) {
-  const c = misComunicados.find((x) => x.id === id);
-  if (c) try { localStorage.setItem(claveAviso(c), "1"); } catch {}
+// Recuerda cuándo se atendió cada aviso en este dispositivo (para no repetirlo al abrir la app)
+const MARGEN_ATENDIDO = 3 * 60000;
+function marcarAtendido(id) { guardarAjuste(`atendido:${id}`, String(Date.now())); }
+function yaAtendido(c) {
+  const t = Number(leerAjuste(`atendido:${c.id}`) || 0);
+  return t && c.ultimoEnvio && c.ultimoEnvio.toMillis() <= t + MARGEN_ATENDIDO;
 }
 function revisarAvisosSinAtender() {
-  if (enPantalla) return;
+  if (enPantalla || !yo) return;
   const ahora = Date.now();
   const reciente = misComunicados.find((c) => {
     if (!c.ultimoEnvio || !c.enviosRealizados) return false;
     const desdeEnvio = ahora - c.ultimoEnvio.toMillis();
-    if (c.eventoEn) {
-      // Evento: si ya empezó, solo se muestra el aviso de "empieza ahora" durante 10 minutos
-      const ultimoTipo = c.programa?.[(c.indiceEnvio || 1) - 1]?.tipo;
-      const inicioEv = c.eventoEn.toMillis();
-      if (ahora > inicioEv + 10 * 60000) return false;
-      if (ahora > inicioEv && ultimoTipo !== "inicio") return false;
-      if (desdeEnvio > 35 * 60000) return false;
-    } else {
-      // Aviso general: solo mientras no haya tocado el siguiente recordatorio
-      if (desdeEnvio > Math.min(45, c.repetirCadaMin || 45) * 60000) return false;
-    }
     const confirmo = (c.confirmados || []).includes(yo.uid);
     if (confirmo && !(c.tipo === "evento" && c.recordarATodos)) return false;
-    try { return !localStorage.getItem(claveAviso(c)); } catch { return true; }
+    if (yaAtendido(c)) return false;
+    if (c.eventoEn) {
+      const inicioEv = c.eventoEn.toMillis();
+      const tarde = (c.avisoTardeMin ?? 60) * 60000;
+      // Ya empezó: se avisa a quien llega tarde, dentro del margen elegido al crear el evento
+      if (ahora > inicioEv) return ahora <= inicioEv + tarde;
+      return desdeEnvio <= 35 * 60000;
+    }
+    // Aviso general: solo mientras no haya tocado el siguiente recordatorio
+    return desdeEnvio <= Math.min(45, c.repetirCadaMin || 45) * 60000;
   });
   if (reciente) mostrarInterrupcion(reciente.id, true, null, true);
 }
+// Revisa también al volver a la ventana y cada minuto (por ejemplo, al despertar la PC)
+document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && revisarAvisosSinAtender());
+setInterval(revisarAvisosSinAtender, 60000);
 function cerrarInterrupcion() { if (enPantalla) marcarAtendido(enPantalla); $("interrupcion").classList.add("oculto"); enPantalla = null; detenerAlarma(); }
 $("intCerrar").onclick = cerrarInterrupcion;
 $("intConfirmar").onclick = async () => {
@@ -329,7 +391,10 @@ $("pestanas").onclick = (e) => {
 function dibujar() {
   if (!yo) return;
   const vistas = { mis: vistaMis, nuevo: vistaNuevo, enviados: vistaEnviados, equipo: vistaEquipo };
+  // Mantener abiertas las fichas que estaban abiertas al redibujar
+  const abiertos = [...document.querySelectorAll("details[data-key][open]")].map((d) => d.dataset.key);
   $("contenido").innerHTML = (vistas[pestanaActual] || vistaMis)();
+  abiertos.forEach((k) => document.querySelector(`details[data-key="${k}"]`)?.setAttribute("open", ""));
   if (pestanaActual === "nuevo") prepararNuevo();
   if (destacar) {
     const el = document.querySelector(`[data-id="${destacar}"]`);
@@ -356,7 +421,25 @@ function vistaMis() {
     <p class="sub">${pend.length ? `Tienes ${pend.length} ${pend.length === 1 ? "comunicado pendiente" : "comunicados pendientes"} de confirmar.` : "Estás al día con todos tus comunicados."}</p>
     ${pend.map((c) => tarjeta(c, true)).join("")}
     ${leid.length ? `<div class="seccion"><h2>Ya confirmados</h2>${leid.map((c) => tarjeta(c, false)).join("")}</div>` : ""}
-    ${!misComunicados.length ? `<div class="vacio">Aquí aparecerán los comunicados que te envíen.</div>` : ""}`;
+    ${!misComunicados.length ? `<div class="vacio">Aquí aparecerán los comunicados que te envíen.</div>` : ""}
+    ${bloqueAltavoces()}`;
+}
+
+// Solo en computadoras con Chrome o Edge (el celular no permite elegir altavoces)
+function bloqueAltavoces() {
+  const soporta = window.AudioContext && "setSinkId" in AudioContext.prototype && !/android|iphone|ipad|mobile/i.test(navigator.userAgent);
+  if (!soporta) return "";
+  const on = multiSalida();
+  return `<div class="seccion"><h2>Sonido de la alarma en esta computadora</h2>
+    <div class="panel">
+      <p style="margin-top:0">${on
+        ? `<strong>Sonando por todas las salidas.</strong> ${salidas.length ? `Detectadas: ${salidas.map((x) => esc(x.nombre)).join(", ")}.` : "Buscando salidas de audio…"}`
+        : "Si usas auriculares, la alarma puede sonar también por los altavoces de la computadora, para que la escuches aunque no los tengas puestos."}</p>
+      <p class="nota">${on ? "Si conectas o desconectas unos auriculares, la lista se actualiza sola." : "Te pedirá permiso de micrófono: es la única forma de que el navegador muestre la lista de altavoces. La app no graba nada."}</p>
+      <div class="acciones">${on
+        ? `<button class="btn claro" data-accion="probarAlarma">Probar sonido</button><button class="btn claro" data-accion="altavocesOff">Desactivar</button>`
+        : `<button class="btn" data-accion="altavoces">Sonar por altavoces y auriculares</button>`}</div>
+    </div></div>`;
 }
 
 /* ---------- Vista: Nuevo comunicado ---------- */
@@ -412,6 +495,14 @@ function vistaNuevo() {
         <label class="campo"><span>Fecha y hora del evento</span><input type="datetime-local" id="nEvento" value="${aLocal(eventoDef)}"></label>
         <label class="persona" style="padding:0 0 14px;border:0"><input type="checkbox" id="nATodos" checked>
           <div>Recordar el evento también a quien ya confirmó la lectura</div></label>
+        <label class="campo"><span>Si alguien prende su computadora tarde, mostrarle el aviso hasta</span>
+          <select id="nTarde">
+            <option value="0">No mostrar después de la hora de inicio</option>
+            <option value="30">30 minutos después del inicio</option>
+            <option value="60" selected>1 hora después del inicio</option>
+            <option value="120">2 horas después del inicio</option>
+            <option value="240">4 horas después del inicio</option>
+          </select></label>
         <div class="aviso" style="background:var(--aviso-claro);border:0;margin-bottom:18px"><div id="nPrograma" class="nota" style="color:var(--tinta)"></div></div>
       </div>
 
@@ -497,7 +588,7 @@ function prepararNuevo() {
       const programa = calcularPrograma(evento, ahora);
       datos = { ...base, tipo: "evento", eventoEn: Timestamp.fromDate(evento),
         programa: programa.map((p) => ({ en: Timestamp.fromDate(p.en), tipo: p.tipo })),
-        indiceEnvio: 0, proximoEnvio: Timestamp.fromDate(ahora), recordarATodos: $("nATodos").checked,
+        indiceEnvio: 0, proximoEnvio: Timestamp.fromDate(ahora), recordarATodos: $("nATodos").checked, avisoTardeMin: Number($("nTarde").value),
         enviarEn: Timestamp.fromDate(ahora), hasta: Timestamp.fromDate(evento), repetirCadaMin: 0 };
       inmediato = true;
     } else {
@@ -565,16 +656,44 @@ function vistaEnviados() {
 }
 const etiquetaIntervalo = (m) => ({ 30: "30 min", 60: "hora", 120: "2 horas", 240: "4 horas", 1440: "día" }[m] || `${m} min`);
 
+/* ---------- Ficha de una persona ---------- */
+function fichaPersona(u) {
+  const disp = (u.tokens || []).length;
+  const ahora = Date.now();
+  const pendientes = todosComunicados.filter((c) => (c.destinatarios || []).includes(u.id) && !(c.confirmados || []).includes(u.id)
+    && (c.activo || (c.eventoEn && c.eventoEn.toMillis() > ahora)));
+  const gruposDe = grupos.filter((g) => (g.miembros || []).includes(u.id)).map((g) => esc(g.nombre));
+  return `<details class="aviso" data-key="u-${u.id}" style="padding:0;margin-bottom:10px">
+    <summary style="list-style:none;display:flex;align-items:center;gap:12px;padding:14px 18px;margin:0">
+      <div style="flex:1"><div style="font-weight:700">${esc(u.nombre)}</div><small class="nota">${esc(u.email)}</small></div>
+      ${pendientes.length ? `<span class="estado esp">${pendientes.length} pendiente${pendientes.length === 1 ? "" : "s"}</span>` : ""}
+      <span class="estado ${disp ? "ok" : "esp"}">${disp ? `${disp} dispositivo${disp === 1 ? "" : "s"}` : "Sin notificaciones"}</span>
+    </summary>
+    <div style="padding:0 18px 18px;border-top:1px solid var(--fondo)">
+      <dl style="display:grid;grid-template-columns:auto 1fr;gap:6px 16px;margin:14px 0">
+        <dt class="nota">Correo</dt><dd style="margin:0">${esc(u.email)}</dd>
+        <dt class="nota">Registrado</dt><dd style="margin:0">${fecha(u.creadoEn) || "—"}</dd>
+        <dt class="nota">Último ingreso</dt><dd style="margin:0">${fecha(u.ultimoAcceso) || "Antes de esta versión"}</dd>
+        <dt class="nota">Dispositivos</dt><dd style="margin:0">${disp ? `${disp} con notificaciones activas` : "Ninguno. Debe tocar “Activar notificaciones” en la app."}</dd>
+        <dt class="nota">Grupos</dt><dd style="margin:0">${gruposDe.join(", ") || "Ninguno"}</dd>
+      </dl>
+      ${pendientes.length ? `<strong>Pendientes de confirmar</strong><ul class="lista-nombres">${pendientes.map((c) => `<li>${esc(c.titulo)}${c.eventoEn ? ` — evento ${fecha(c.eventoEn)}` : ""}</li>`).join("")}</ul>` : ""}
+      <div class="acciones">
+        <button class="btn claro" data-accion="resetClave" data-id="${u.id}">Enviar cambio de contraseña</button>
+        <button class="btn claro" data-accion="editarNombre" data-id="${u.id}">Editar nombre</button>
+        ${u.id !== yo.uid ? `<button class="btn peligro" data-accion="quitarPersona" data-id="${u.id}">Quitar del equipo</button>` : ""}
+      </div>
+    </div></details>`;
+}
+
 /* ---------- Vista: Equipo y grupos ---------- */
 function vistaEquipo() {
   return `<h1 class="titulo">Equipo y grupos</h1>
     <p class="sub">Comparte este enlace con tu equipo para que creen su cuenta:<br><strong>${esc(location.origin + location.pathname)}</strong></p>
     <button class="btn claro" data-accion="copiar">Copiar enlace</button>
     <div class="seccion"><h2>Personas (${usuarios.length})</h2>
-      <div class="panel" style="padding:0">${usuarios.map((u) => `
-        <div class="persona" style="cursor:default"><div style="flex:1">${esc(u.nombre)}<small>${esc(u.email)}</small></div>
-        <span class="estado ${(u.tokens || []).length ? "ok" : "esp"}">${(u.tokens || []).length ? `${u.tokens.length} ${u.tokens.length === 1 ? "dispositivo" : "dispositivos"}` : "Sin notificaciones"}</span></div>`).join("")
-        || `<div class="vacio">Nadie se ha registrado aún.</div>`}</div></div>
+      <p class="nota" style="margin-top:-6px">Toca a una persona para ver su ficha.</p>
+      ${usuarios.map(fichaPersona).join("") || `<div class="panel vacio">Nadie se ha registrado aún.</div>`}</div>
     <div class="seccion"><h2>Envío inmediato</h2>
       <form class="panel" id="formToken">
         <p style="margin-top:0">${ghToken
@@ -602,6 +721,29 @@ document.addEventListener("click", async (e) => {
   const id = b.dataset.id;
   switch (b.dataset.accion) {
     case "activar": iniciarNotificaciones(true); break;
+    case "altavoces": await activarTodosAltavoces(true); break;
+    case "altavocesOff": await activarTodosAltavoces(false); break;
+    case "probarAlarma": pitido(); break;
+    case "resetClave": {
+      const u = usuarios.find((x) => x.id === id); if (!u) break;
+      try { await sendPasswordResetEmail(auth, u.email); toast(`Correo enviado a ${u.email}. Que revise también Spam.`); }
+      catch (err) { toast("No se pudo enviar: " + traducirError(err)); }
+      break;
+    }
+    case "editarNombre": {
+      const u = usuarios.find((x) => x.id === id); if (!u) break;
+      const nuevo = prompt("Nuevo nombre:", u.nombre || "");
+      if (nuevo && nuevo.trim()) { await updateDoc(doc(db, "users", id), { nombre: nuevo.trim() }); toast("Nombre actualizado."); }
+      break;
+    }
+    case "quitarPersona": {
+      const u = usuarios.find((x) => x.id === id); if (!u) break;
+      if (!confirm(`¿Quitar a ${u.nombre} del equipo? Dejará de recibir avisos. Para que no pueda volver a entrar, borra también su cuenta en Firebase → Authentication.`)) break;
+      for (const g of grupos.filter((g) => (g.miembros || []).includes(id))) await updateDoc(doc(db, "grupos", g.id), { miembros: arrayRemove(id) });
+      await deleteDoc(doc(db, "users", id));
+      toast(`${u.nombre} fue quitado del equipo.`);
+      break;
+    }
     case "probarToken": toast((await dispararEnvio()) === "ok" ? "Listo: GitHub está ejecutando el envío." : "El token no funcionó. Revisa que tenga permiso de Actions (lectura y escritura) en este repositorio."); break;
     case "confirmar": b.disabled = true; await confirmar(id); break;
     case "detener": await updateDoc(doc(db, "comunicados", id), { activo: false, motivoFin: "detenido por el administrador" }); toast("Recordatorios detenidos."); break;
