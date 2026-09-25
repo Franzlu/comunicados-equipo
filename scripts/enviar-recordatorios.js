@@ -10,7 +10,9 @@ const db = admin.firestore();
 const messaging = admin.messaging();
 const { FieldValue, Timestamp } = admin.firestore;
 const APP_URL = (process.env.APP_URL || "").replace(/\/?$/, "/");
-const ADELANTO = 4 * 60000; // envía hasta 4 min antes para no llegar tarde entre turnos
+// Margen para no llegar tarde entre turnos (el aviso de "empieza ahora" casi sin adelanto)
+const ADELANTO = 2 * 60000;
+const adelanto = (tipo) => (tipo === "inicio" ? 30000 : ADELANTO);
 const TOKENS_INVALIDOS = ["messaging/registration-token-not-registered", "messaging/invalid-registration-token", "messaging/invalid-argument"];
 
 const usuarios = new Map();
@@ -54,7 +56,7 @@ async function procesarEvento(d, c, ahora, pendientes) {
   const programa = (c.programa || []).map((p) => ({ en: p.en.toDate(), tipo: p.tipo }));
   let idx = c.indiceEnvio || 0;
   let ultimo = -1;
-  while (idx < programa.length && programa[idx].en.getTime() <= ahora.getTime() + ADELANTO) { ultimo = idx; idx++; }
+  while (idx < programa.length && programa[idx].en.getTime() <= ahora.getTime() + adelanto(programa[idx].tipo)) { ultimo = idx; idx++; }
   if (ultimo < 0) return;
 
   const paso = programa[ultimo]; // si se juntaron varios, se envía solo el más reciente
@@ -69,11 +71,14 @@ async function procesarEvento(d, c, ahora, pendientes) {
     cuerpo = `🗓 ${diaEv}, ${horaEv}\n${(c.mensaje || "").slice(0, 160)}`;
     uids = pendientes;
   } else {
-    titulo = paso.tipo === "antes" ? `⏰ En 10 minutos: ${c.titulo}` : `⏰ Hoy a las ${horaEv}: ${c.titulo}`;
+    titulo = paso.tipo === "antes" ? `⏰ En 10 minutos: ${c.titulo}`
+      : paso.tipo === "inicio" ? `⏰ Empieza ahora: ${c.titulo}`
+      : `⏰ Hoy a las ${horaEv}: ${c.titulo}`;
     cuerpo = (c.mensaje || "").slice(0, 160);
     uids = c.recordarATodos ? c.destinatarios || [] : pendientes;
   }
-  const vence = idx < programa.length ? Math.min(programa[idx].en.getTime(), ev.getTime()) : ev.getTime();
+  const vence = paso.tipo === "inicio" ? ev.getTime() + 15 * 60000
+    : idx < programa.length ? programa[idx].en.getTime() : ev.getTime();
   const res = uids.length ? await notificar(d.id, uids, titulo, cuerpo, (vence - ahora.getTime()) / 1000) : "0/0";
   console.log(`[evento] "${c.titulo}" — aviso ${ultimo + 1}/${programa.length} (${paso.tipo}): ${res} notificaciones entregadas`);
 
