@@ -30,17 +30,44 @@ const nombreDe = (uid) => usuarios.find((u) => u.id === uid)?.nombre || "Sin nom
 const esIOS = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 const instalada = matchMedia("(display-mode: standalone)").matches || navigator.standalone;
 
-function sonido() {
-  try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    [0, 0.25].forEach((t) => {
-      const o = ctx.createOscillator(), g = ctx.createGain();
-      o.frequency.value = 880; o.connect(g); g.connect(ctx.destination);
-      g.gain.setValueAtTime(0.25, ctx.currentTime + t); g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + t + 0.2);
-      o.start(ctx.currentTime + t); o.stop(ctx.currentTime + t + 0.22);
-    });
-  } catch {}
+// Alarma que se repite hasta que la persona atienda el aviso
+let ctxAudio = null, bucleAlarma = null, parpadeo = null;
+const tituloOriginal = document.title;
+function audio() {
+  if (!ctxAudio) { try { ctxAudio = new (window.AudioContext || window.webkitAudioContext)(); } catch { return null; } }
+  if (ctxAudio.state === "suspended") ctxAudio.resume().catch(() => {});
+  return ctxAudio;
 }
+// El navegador solo permite sonido después de un primer clic en la página
+addEventListener("pointerdown", () => audio(), { once: true });
+function pitido() {
+  const ctx = audio(); if (!ctx) return;
+  [0, 0.22, 0.44].forEach((t, i) => {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = "square"; o.frequency.value = i === 2 ? 1175 : 880;
+    o.connect(g); g.connect(ctx.destination);
+    g.gain.setValueAtTime(0.18, ctx.currentTime + t); g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + t + 0.18);
+    o.start(ctx.currentTime + t); o.stop(ctx.currentTime + t + 0.2);
+  });
+}
+function iniciarAlarma() {
+  detenerAlarma(); pitido();
+  bucleAlarma = setInterval(pitido, 1600);
+  let v = false; // el título parpadea en la barra de tareas
+  parpadeo = setInterval(() => { document.title = (v = !v) ? "🔔 AVISO PENDIENTE" : tituloOriginal; }, 1000);
+  navigator.setAppBadge?.(1).catch(() => {});
+}
+function detenerAlarma() {
+  clearInterval(bucleAlarma); clearInterval(parpadeo); bucleAlarma = parpadeo = null;
+  document.title = tituloOriginal; navigator.clearAppBadge?.().catch(() => {});
+}
+
+// Mensajes del service worker: llegó un aviso o se cerró la notificación
+navigator.serviceWorker?.addEventListener("message", (e) => {
+  const m = e.data || {};
+  if (m.tipo === "aviso-push" && m.comunicadoId) mostrarInterrupcion(m.comunicadoId, true, { title: m.title, body: m.body }, true);
+  if (m.tipo === "aviso-cerrado" && m.comunicadoId === enPantalla) detenerAlarma();
+});
 
 /* ---------- Acceso ---------- */
 let modoRegistro = false;
@@ -173,7 +200,7 @@ async function iniciarNotificaciones(pedirPermiso) {
     }
     onMessage(messaging, (payload) => {
       const id = payload.data?.comunicadoId;
-      if (id) mostrarInterrupcion(id, true, payload.notification);
+      if (id) mostrarInterrupcion(id, true, payload.notification, true);
     });
   } catch (e) {
     console.error(e); estadoNotif = "pendiente";
@@ -199,19 +226,32 @@ function bloqueNotificaciones() {
 
 /* ---------- Interrupción en pantalla ---------- */
 let enPantalla = null;
-function mostrarInterrupcion(id, esRecordatorio, notif) {
+function mostrarInterrupcion(id, esRecordatorio, notif, desdePush = false) {
+  if (!yo) return;
   const c = misComunicados.find((x) => x.id === id);
-  if (c && (c.confirmados || []).includes(yo.uid)) return;
+  const yaConfirmo = c && (c.confirmados || []).includes(yo.uid);
+  // Si ya confirmó, solo se interrumpe por recordatorios del evento que le lleguen
+  if (yaConfirmo && !desdePush) return;
+  if (enPantalla === id && bucleAlarma) return; // ya está en pantalla y sonando
   enPantalla = id;
-  $("intTipo").textContent = esRecordatorio && c?.enviosRealizados ? "Recordatorio pendiente" : "Nuevo comunicado";
-  $("intTitulo").textContent = c?.titulo || notif?.title || "Comunicado";
-  $("intMensaje").textContent = c?.mensaje || notif?.body || "";
+  const titulo = notif?.title || "";
+  $("intTipo").textContent = titulo.startsWith("⏰") ? titulo.split(": ")[0].replace("⏰", "").trim()
+    : esRecordatorio && c?.enviosRealizados ? "Recordatorio pendiente" : "Nuevo comunicado";
+  $("intTitulo").textContent = c?.titulo || titulo || "Comunicado";
+  $("intMensaje").textContent = (c?.eventoEn ? `🗓 ${diaCorto(c.eventoEn.toDate())}, ${hora(c.eventoEn.toDate())}\n` : "") + (c?.mensaje || notif?.body || "");
+  $("intConfirmar").textContent = yaConfirmo ? "Entendido" : "Confirmar lectura";
+  $("intConfirmar").dataset.confirmado = yaConfirmo ? "1" : "";
   $("interrupcion").classList.remove("oculto");
   $("intConfirmar").focus();
-  sonido();
+  iniciarAlarma();
 }
-$("intCerrar").onclick = () => { $("interrupcion").classList.add("oculto"); enPantalla = null; };
-$("intConfirmar").onclick = async () => { if (enPantalla) await confirmar(enPantalla); $("interrupcion").classList.add("oculto"); enPantalla = null; };
+function cerrarInterrupcion() { $("interrupcion").classList.add("oculto"); enPantalla = null; detenerAlarma(); }
+$("intCerrar").onclick = cerrarInterrupcion;
+$("intConfirmar").onclick = async () => {
+  const id = enPantalla, yaConfirmo = $("intConfirmar").dataset.confirmado;
+  cerrarInterrupcion();
+  if (id && !yaConfirmo) await confirmar(id);
+};
 
 async function confirmar(id) {
   try {
