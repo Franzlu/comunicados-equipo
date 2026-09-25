@@ -263,8 +263,12 @@ async function iniciarNotificaciones(pedirPermiso) {
   try {
     const swUrl = "./firebase-messaging-sw.js?config=" + encodeURIComponent(JSON.stringify(firebaseConfig));
     const reg = await navigator.serviceWorker.register(swUrl, { scope: "./" });
+    // La primera vez hay que esperar a que el service worker quede activo antes de pedir el registro
+    await esperarActivo(reg);
     const messaging = getMessaging(app);
-    const token = await getToken(messaging, { vapidKey: VAPID_KEY, serviceWorkerRegistration: reg });
+    let token;
+    try { token = await getToken(messaging, { vapidKey: VAPID_KEY, serviceWorkerRegistration: reg }); }
+    catch { await new Promise((r) => setTimeout(r, 2000)); token = await getToken(messaging, { vapidKey: VAPID_KEY, serviceWorkerRegistration: reg }); }
     if (token) {
       tokenActual = token;
       await setDoc(doc(db, "users", yo.uid), { tokens: arrayUnion(token) }, { merge: true });
@@ -280,6 +284,15 @@ async function iniciarNotificaciones(pedirPermiso) {
     if (pedirPermiso) toast("No se pudieron activar: " + (e.message || e));
   }
   dibujar();
+}
+
+function esperarActivo(reg) {
+  if (reg.active) return Promise.resolve();
+  const sw = reg.installing || reg.waiting;
+  return new Promise((listo) => {
+    const fin = setTimeout(listo, 10000);
+    sw?.addEventListener("statechange", () => { if (sw.state === "activated") { clearTimeout(fin); listo(); } });
+  });
 }
 
 function bloqueNotificaciones() {
