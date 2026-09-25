@@ -34,12 +34,26 @@ const instalada = matchMedia("(display-mode: standalone)").matches || navigator.
 let ctxAudio = null, bucleAlarma = null, parpadeo = null;
 const tituloOriginal = document.title;
 function audio() {
-  if (!ctxAudio) { try { ctxAudio = new (window.AudioContext || window.webkitAudioContext)(); } catch { return null; } }
+  if (!ctxAudio) {
+    try { ctxAudio = new (window.AudioContext || window.webkitAudioContext)(); } catch { return null; }
+    ctxAudio.onstatechange = () => typeof revisarSonido === "function" && revisarSonido();
+  }
   if (ctxAudio.state === "suspended") ctxAudio.resume().catch(() => {});
   return ctxAudio;
 }
-// El navegador solo permite sonido después de un primer clic en la página
-addEventListener("pointerdown", () => audio(), { once: true });
+// El navegador solo permite sonido después de un primer clic en la página.
+// Mientras no esté permitido, se muestra una barra para activarlo con un toque.
+const barraSonido = document.createElement("button");
+barraSonido.textContent = "🔇 Las alarmas están en silencio. Toca aquí para activar el sonido.";
+barraSonido.style.cssText = "position:fixed;left:0;right:0;bottom:0;z-index:150;border:0;padding:14px 20px calc(14px + env(safe-area-inset-bottom,0px));background:#D1495B;color:#fff;font:700 16px var(--texto);cursor:pointer;display:none";
+document.body.appendChild(barraSonido);
+function revisarSonido() {
+  const ctx = audio();
+  barraSonido.style.display = yo && ctx && ctx.state !== "running" ? "block" : "none";
+}
+barraSonido.onclick = async () => { await audio()?.resume().catch(() => {}); pitido(); revisarSonido(); };
+addEventListener("pointerdown", () => { audio(); setTimeout(revisarSonido, 300); });
+setInterval(revisarSonido, 3000);
 function pitido() {
   const ctx = audio(); if (!ctx) return;
   [0, 0.22, 0.44].forEach((t, i) => {
@@ -67,6 +81,7 @@ navigator.serviceWorker?.addEventListener("message", (e) => {
   const m = e.data || {};
   if (m.tipo === "aviso-push" && m.comunicadoId) mostrarInterrupcion(m.comunicadoId, true, { title: m.title, body: m.body }, true);
   if (m.tipo === "aviso-cerrado" && m.comunicadoId === enPantalla) detenerAlarma();
+  if (m.tipo === "aviso-abierto" && m.comunicadoId && enPantalla !== m.comunicadoId) mostrarInterrupcion(m.comunicadoId, true, { title: m.title }, true);
 });
 
 /* ---------- Acceso ---------- */
@@ -151,6 +166,7 @@ function escuchar() {
         if (ch.type === "added" && !(ch.doc.data().confirmados || []).includes(yo.uid)) mostrarInterrupcion(ch.doc.id, false);
       }
     }
+    if (primeraCarga) setTimeout(revisarAvisosSinAtender, 800);
     primeraCarga = false;
     if (pestanaActual === "mis") dibujar();
   }));
@@ -226,6 +242,13 @@ function bloqueNotificaciones() {
 
 /* ---------- Interrupción en pantalla ---------- */
 let enPantalla = null;
+// Reconstruye qué tipo de aviso fue el último enviado (cuando la app se abre después)
+function tituloUltimoAviso(c) {
+  if (!c?.programa || !c.indiceEnvio) return "";
+  const tipo = c.programa[c.indiceEnvio - 1]?.tipo;
+  const h = c.eventoEn ? hora(c.eventoEn.toDate()) : "";
+  return { antes: `⏰ En 10 minutos: ${c.titulo}`, dia: `⏰ Hoy a las ${h}: ${c.titulo}`, inicio: `⏰ Empieza ahora: ${c.titulo}` }[tipo] || "";
+}
 function mostrarInterrupcion(id, esRecordatorio, notif, desdePush = false) {
   if (!yo) return;
   const c = misComunicados.find((x) => x.id === id);
@@ -234,7 +257,7 @@ function mostrarInterrupcion(id, esRecordatorio, notif, desdePush = false) {
   if (yaConfirmo && !desdePush) return;
   if (enPantalla === id && bucleAlarma) return; // ya está en pantalla y sonando
   enPantalla = id;
-  const titulo = notif?.title || "";
+  const titulo = notif?.title || tituloUltimoAviso(c);
   $("intTipo").textContent = titulo.startsWith("⏰") ? titulo.split(": ")[0].replace("⏰", "").trim()
     : esRecordatorio && c?.enviosRealizados ? "Recordatorio pendiente" : "Nuevo comunicado";
   $("intTitulo").textContent = c?.titulo || titulo || "Comunicado";
@@ -245,7 +268,26 @@ function mostrarInterrupcion(id, esRecordatorio, notif, desdePush = false) {
   $("intConfirmar").focus();
   iniciarAlarma();
 }
-function cerrarInterrupcion() { $("interrupcion").classList.add("oculto"); enPantalla = null; detenerAlarma(); }
+// Recuerda qué avisos ya se atendieron en este dispositivo (para no repetirlos al abrir la app)
+const claveAviso = (c) => `atendido:${c.id}:${c.ultimoEnvio?.seconds || 0}`;
+function marcarAtendido(id) {
+  const c = misComunicados.find((x) => x.id === id);
+  if (c) try { localStorage.setItem(claveAviso(c), "1"); } catch {}
+}
+function revisarAvisosSinAtender() {
+  if (enPantalla) return;
+  const ahora = Date.now();
+  const reciente = misComunicados.find((c) => {
+    if (!c.ultimoEnvio || !c.enviosRealizados) return false;
+    if (ahora - c.ultimoEnvio.toMillis() > 45 * 60000) return false;          // solo avisos recientes
+    if (c.eventoEn && c.eventoEn.toMillis() + 15 * 60000 < ahora) return false; // evento ya pasó
+    const confirmo = (c.confirmados || []).includes(yo.uid);
+    if (confirmo && !(c.tipo === "evento" && c.recordarATodos)) return false;
+    try { return !localStorage.getItem(claveAviso(c)); } catch { return true; }
+  });
+  if (reciente) mostrarInterrupcion(reciente.id, true, null, true);
+}
+function cerrarInterrupcion() { if (enPantalla) marcarAtendido(enPantalla); $("interrupcion").classList.add("oculto"); enPantalla = null; detenerAlarma(); }
 $("intCerrar").onclick = cerrarInterrupcion;
 $("intConfirmar").onclick = async () => {
   const id = enPantalla, yaConfirmo = $("intConfirmar").dataset.confirmado;
@@ -322,6 +364,7 @@ function calcularPrograma(evento, ahora = new Date()) {
     programa.push({ en: t, tipo: "dia" });
   }
   if (diezAntes - ahora > 2 * 60000) programa.push({ en: diezAntes, tipo: "antes" });
+  if (evento - ahora > 2 * 60000) programa.push({ en: evento, tipo: "inicio" });
   return programa;
 }
 const hora = (d) => d.toLocaleTimeString("es", { hour: "numeric", minute: "2-digit" });
@@ -401,11 +444,13 @@ function prepararNuevo() {
     const p = calcularPrograma(ev);
     const dia = p.filter((x) => x.tipo === "dia");
     const antes = p.find((x) => x.tipo === "antes");
+    const empieza = p.find((x) => x.tipo === "inicio");
     $("nPrograma").innerHTML = `<strong>Se enviarán ${p.length} avisos:</strong>
       <ul class="lista-nombres">
         <li>Ahora, al enviar el comunicado</li>
         ${dia.length ? `<li>El ${diaCorto(ev)}: ${dia.length === 1 ? `a las ${hora(dia[0].en)}` : `de ${hora(dia[0].en)} a ${hora(dia.at(-1).en)}, cada 30 minutos`}</li>` : ""}
         ${antes ? `<li>A las ${hora(antes.en)}, 10 minutos antes del evento</li>` : ""}
+        ${empieza ? `<li>A las ${hora(empieza.en)}, cuando empieza el evento</li>` : ""}
       </ul>`;
   };
   actualizar(); vistaPrograma();

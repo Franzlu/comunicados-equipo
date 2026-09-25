@@ -1,4 +1,24 @@
 // Service worker: recibe las notificaciones aunque la app esté cerrada.
+
+// Al tocar una notificación: si la app ya está abierta (en una pestaña o como app),
+// se trae al frente y muestra el aviso; si no, se abre. Va antes de Firebase para tener prioridad.
+self.addEventListener('notificationclick', (event) => {
+  const n = event.notification;
+  const id = n?.tag || n?.data?.FCM_MSG?.data?.comunicadoId;
+  if (!id) return;
+  event.stopImmediatePropagation();
+  n.close();
+  event.waitUntil((async () => {
+    const ventanas = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const app = ventanas.find((v) => v.url.startsWith(self.registration.scope));
+    if (app) {
+      await app.focus();
+      app.postMessage({ tipo: 'aviso-abierto', comunicadoId: id, title: n.title });
+      return;
+    }
+    return self.clients.openWindow(new URL('./?c=' + id, self.registration.scope).href);
+  })());
+});
 importScripts('https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js');
 importScripts('https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging-compat.js');
 
