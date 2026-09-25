@@ -77,7 +77,8 @@ async function procesarEvento(d, c, ahora, pendientes) {
     cuerpo = (c.mensaje || "").slice(0, 160);
     uids = c.recordarATodos ? c.destinatarios || [] : pendientes;
   }
-  const vence = paso.tipo === "inicio" ? ev.getTime() + 15 * 60000
+  // El aviso de inicio sigue vigente para quien prenda su equipo tarde (margen elegido al crear el evento)
+  const vence = paso.tipo === "inicio" ? ev.getTime() + Math.max(15, c.avisoTardeMin ?? 60) * 60000
     : idx < programa.length ? programa[idx].en.getTime() : ev.getTime();
   const res = uids.length ? await notificar(d.id, uids, titulo, cuerpo, (vence - ahora.getTime()) / 1000) : "0/0";
   console.log(`[evento] "${c.titulo}" — aviso ${ultimo + 1}/${programa.length} (${paso.tipo}): ${res} notificaciones entregadas`);
