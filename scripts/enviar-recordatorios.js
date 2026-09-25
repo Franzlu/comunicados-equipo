@@ -19,7 +19,10 @@ async function perfil(uid) {
   return usuarios.get(uid);
 }
 
-async function notificar(id, uids, titulo, cuerpo) {
+// ttlSeg: si el dispositivo está apagado más tiempo que esto, el aviso se descarta
+// (así nadie recibe tarde un recordatorio que ya no sirve)
+async function notificar(id, uids, titulo, cuerpo, ttlSeg) {
+  const ttl = String(Math.max(60, Math.round(ttlSeg || 86400)));
   const mensajes = [], origen = [];
   for (const uid of uids) {
     for (const token of (await perfil(uid)).tokens || []) {
@@ -27,6 +30,7 @@ async function notificar(id, uids, titulo, cuerpo) {
         token,
         data: { comunicadoId: id },
         webpush: {
+          headers: { TTL: ttl, Urgency: "high" },
           notification: { title: titulo, body: cuerpo, requireInteraction: true, tag: id, renotify: true, icon: APP_URL + "icon-192.png" },
           fcmOptions: { link: `${APP_URL}?c=${id}` }
         }
@@ -69,7 +73,8 @@ async function procesarEvento(d, c, ahora, pendientes) {
     cuerpo = (c.mensaje || "").slice(0, 160);
     uids = c.recordarATodos ? c.destinatarios || [] : pendientes;
   }
-  const res = uids.length ? await notificar(d.id, uids, titulo, cuerpo) : "0/0";
+  const vence = idx < programa.length ? Math.min(programa[idx].en.getTime(), ev.getTime()) : ev.getTime();
+  const res = uids.length ? await notificar(d.id, uids, titulo, cuerpo, (vence - ahora.getTime()) / 1000) : "0/0";
   console.log(`[evento] "${c.titulo}" — aviso ${ultimo + 1}/${programa.length} (${paso.tipo}): ${res} notificaciones entregadas`);
 
   const cambios = { ultimoEnvio: Timestamp.fromDate(ahora), enviosRealizados: FieldValue.increment(1), indiceEnvio: idx };
@@ -88,7 +93,7 @@ async function procesarAviso(d, c, ahora, pendientes) {
   const esPrimero = !c.enviosRealizados;
   const titulo = esPrimero ? `📢 ${c.titulo}` : `🔔 Recordatorio: ${c.titulo}`;
   const cuerpo = (c.mensaje || "").slice(0, 180) + (esPrimero ? "" : "\nToca para confirmar la lectura.");
-  const res = await notificar(d.id, pendientes, titulo, cuerpo);
+  const res = await notificar(d.id, pendientes, titulo, cuerpo, (c.repetirCadaMin || 1440) * 60);
   console.log(`[aviso] "${c.titulo}": ${pendientes.length} pendientes, ${res} notificaciones entregadas`);
 
   const cambios = { ultimoEnvio: Timestamp.fromDate(ahora), enviosRealizados: FieldValue.increment(1) };
