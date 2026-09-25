@@ -279,8 +279,18 @@ function revisarAvisosSinAtender() {
   const ahora = Date.now();
   const reciente = misComunicados.find((c) => {
     if (!c.ultimoEnvio || !c.enviosRealizados) return false;
-    if (ahora - c.ultimoEnvio.toMillis() > 45 * 60000) return false;          // solo avisos recientes
-    if (c.eventoEn && c.eventoEn.toMillis() + 15 * 60000 < ahora) return false; // evento ya pasó
+    const desdeEnvio = ahora - c.ultimoEnvio.toMillis();
+    if (c.eventoEn) {
+      // Evento: si ya empezó, solo se muestra el aviso de "empieza ahora" durante 10 minutos
+      const ultimoTipo = c.programa?.[(c.indiceEnvio || 1) - 1]?.tipo;
+      const inicioEv = c.eventoEn.toMillis();
+      if (ahora > inicioEv + 10 * 60000) return false;
+      if (ahora > inicioEv && ultimoTipo !== "inicio") return false;
+      if (desdeEnvio > 35 * 60000) return false;
+    } else {
+      // Aviso general: solo mientras no haya tocado el siguiente recordatorio
+      if (desdeEnvio > Math.min(45, c.repetirCadaMin || 45) * 60000) return false;
+    }
     const confirmo = (c.confirmados || []).includes(yo.uid);
     if (confirmo && !(c.tipo === "evento" && c.recordarATodos)) return false;
     try { return !localStorage.getItem(claveAviso(c)); } catch { return true; }
